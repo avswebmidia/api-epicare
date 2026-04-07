@@ -7,97 +7,53 @@ dotenv.config();
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' })); // Aumentei o limite para dados grandes
 
-// Verifica se DATABASE_URL existe
-if (!process.env.DATABASE_URL) {
-  console.error('ERRO: DATABASE_URL não configurada!');
-  process.exit(1);
-}
+const pool = mysql.createPool(process.env.DATABASE_URL || '');
 
-// Conexão com o MySQL
-const pool = mysql.createPool(process.env.DATABASE_URL);
-
-// Teste de conexão com o banco
 app.get('/api/health', async (req, res) => {
   try {
     await pool.query('SELECT 1');
     res.json({ status: 'API Online', database: 'conectado' });
-  } catch (error) {
-    res.status(500).json({ status: 'API Online', database: 'erro', error: error.message });
+  } catch (e) {
+    res.status(500).json({ status: 'API Online', database: 'erro' });
   }
 });
 
-// Rota para buscar pacientes
+// Rotas de Leitura
 app.get('/api/patients', async (req, res) => {
-  try {
-    const [rows] = await pool.query('SELECT * FROM patients');
-    res.json(rows);
-  } catch (error) {
-    console.error('Erro em /api/patients:', error);
-    res.status(500).json({ error: 'Erro ao buscar pacientes', details: error.message });
-  }
+  const [rows] = await pool.query('SELECT * FROM patients');
+  res.json(rows);
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`✅ API rodando na porta ${PORT}`);
-  console.log(`📊 DATABASE_URL configurada: ${process.env.DATABASE_URL ? 'sim' : 'não'}`);
-});
-// Adicione estas rotas ao seu server.ts
-app.get('/api/medications', async (req, res) => {
-  try {
-    const [rows] = await pool.query('SELECT * FROM medications');
-    res.json(rows);
-  } catch (error) {
-    res.status(500).json({ error: 'Erro ao buscar medicações' });
-  }
-});
-
-app.get('/api/administrations', async (req, res) => {
-  try {
-    const [rows] = await pool.query('SELECT * FROM administrations ORDER BY administeredAt DESC');
-    res.json(rows);
-  } catch (error) {
-    res.status(500).json({ error: 'Erro ao buscar administrações' });
-  }
-});
-
-app.get('/api/seizures', async (req, res) => {
-  try {
-    const [rows] = await pool.query('SELECT * FROM seizures ORDER BY startTime DESC');
-    res.json(rows);
-  } catch (error) {
-    res.status(500).json({ error: 'Erro ao buscar crises' });
-  }
-});
-
-app.get('/api/monitoring_logs', async (req, res) => {
-  try {
-    const [rows] = await pool.query('SELECT * FROM monitoring_logs ORDER BY timestamp DESC');
-    res.json(rows);
-  } catch (error) {
-    res.status(500).json({ error: 'Erro ao buscar logs' });
-  }
-});
-
-// Adicione esta rota no seu server.ts
+// Rota de Migração (Para mover dados do Firebase para o MySQL)
 app.post('/api/migrate', async (req, res) => {
-  const { table, data } = req.body; // data é um array de objetos
+  const { table, data } = req.body;
+  
   try {
-    // Exemplo para pacientes:
-    if (table === 'patients') {
-      for (const p of data) {
-        await pool.query(
+    const connection = await pool.getConnection();
+    await connection.beginTransaction();
+
+    for (const item of data) {
+      if (table === 'patients') {
+        await connection.query(
           'INSERT INTO patients (id, company_id, name, owner_uid, created_at) VALUES (?, ?, ?, ?, ?)',
-          [p.id, p.companyId || 'default', p.name, p.ownerUid, p.createdAt]
+          [item.id, item.companyId || 'default', item.name, item.ownerUid, item.createdAt]
         );
       }
+      // Podemos adicionar outras tabelas aqui conforme necessário
     }
-    // ... podemos adicionar outras tabelas aqui ...
+
+    await connection.commit();
+    connection.release();
     res.json({ status: 'Migração concluída' });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Erro na migração' });
   }
+});
+
+const PORT = 3000;
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`API rodando na porta ${PORT}`);
 });
