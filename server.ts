@@ -241,6 +241,20 @@ app.get('/api/health', async (req, res) => {
   });
 });
 
+// Adicione antes das outras rotas
+app.get('/', (req, res) => {
+  res.json({
+    message: 'API da Epicare está funcionando!',
+    endpoints: {
+      health: '/api/health',
+      users: '/api/users',
+      login: '/api/login',
+      createUsers: '/api/create-users'
+    },
+    documentation: 'https://whats-epicare-api.y7nagi.easypanel.host/api/health'
+  });
+});
+
 const PORT = 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`\n🚀 API rodando na porta ${PORT}`);
