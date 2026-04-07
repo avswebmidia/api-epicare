@@ -300,6 +300,39 @@ app.post('/api/patients', async (req, res) => {
   }
 });
 
+
+// Proxy para API externa de empresas
+app.get('/api/companies', async (req, res) => {
+  try {
+    const response = await fetch('https://api-externa.com/companies', {
+      headers: {
+        'Authorization': `Bearer ${process.env.EXTERNAL_API_KEY}`
+      }
+    });
+    const data = await response.json();
+    res.json(data);
+  } catch (error) {
+    console.error('Erro ao buscar empresas:', error);
+    res.status(500).json({ error: 'Erro ao buscar empresas' });
+  }
+});
+
+// Proxy para API externa de planos
+app.get('/api/plans', async (req, res) => {
+  try {
+    const response = await fetch('https://api-externa.com/plans', {
+      headers: {
+        'Authorization': `Bearer ${process.env.EXTERNAL_API_KEY}`
+      }
+    });
+    const data = await response.json();
+    res.json(data);
+  } catch (error) {
+    console.error('Erro ao buscar planos:', error);
+    res.status(500).json({ error: 'Erro ao buscar planos' });
+  }
+});
+
 const PORT = 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`\n🚀 API rodando na porta ${PORT}`);
