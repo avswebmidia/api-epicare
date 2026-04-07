@@ -29,7 +29,7 @@ app.post('/api/create-users', async (req, res) => {
         email: 'admin@epicare.com',
         role: 'super-admin',
         display_name: 'Administrador Principal',
-        password_hash: 'admin123' // Senha sem criptografia
+        password_hash: 'admin123'
       },
       {
         uid: 'superadmin_001',
@@ -50,42 +50,53 @@ app.post('/api/create-users', async (req, res) => {
     ];
     
     let created = 0;
+    let errors = 0;
     
     for (const user of users) {
-      const [existing] = await connection.query(
-        'SELECT uid FROM usuarios WHERE email = ?',
-        [user.email]
-      );
-      
-      if (Array.isArray(existing) && existing.length > 0) {
-        await connection.query(
-          `UPDATE usuarios SET 
-            role = ?, 
-            display_name = ?, 
-            password_hash = ?,
-            updated_at = NOW()
-           WHERE email = ?`,
-          [user.role, user.display_name, user.password_hash, user.email]
+      try {
+        // Verificar se já existe
+        const [existing] = await connection.query(
+          'SELECT uid FROM users WHERE email = ?',
+          [user.email]
         );
-        console.log(`✅ Usuário ${user.email} atualizado`);
-      } else {
-        await connection.query(
-          `INSERT INTO usuarios (
-            uid, company_id, email, role, display_name, 
-            password_hash, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())`,
-          [user.uid, user.company_id, user.email, user.role, user.display_name, user.password_hash]
-        );
-        console.log(`✅ Usuário ${user.email} criado`);
+        
+        if (Array.isArray(existing) && existing.length > 0) {
+          // Atualizar existente
+          await connection.query(
+            `UPDATE users SET 
+              role = ?, 
+              display_name = ?, 
+              password_hash = ?,
+              updated_at = NOW()
+             WHERE email = ?`,
+            [user.role, user.display_name, user.password_hash, user.email]
+          );
+          console.log(`✅ Usuário ${user.email} atualizado`);
+        } else {
+          // Inserir novo
+          await connection.query(
+            `INSERT INTO users (
+              uid, company_id, email, role, display_name, 
+              password_hash, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+            [user.uid, user.company_id, user.email, user.role, user.display_name, user.password_hash]
+          );
+          console.log(`✅ Usuário ${user.email} criado`);
+        }
+        created++;
+      } catch (error) {
+        errors++;
+        console.error(`❌ Erro ao processar ${user.email}:`, error);
       }
-      created++;
     }
     
     connection.release();
     
     res.json({
       success: true,
-      message: 'Usuários criados com sucesso',
+      message: 'Usuários processados com sucesso',
+      created: created,
+      errors: errors,
       users: users.map(u => ({ email: u.email, role: u.role, password: u.password_hash }))
     });
     
@@ -95,7 +106,7 @@ app.post('/api/create-users', async (req, res) => {
   }
 });
 
-// Rota de login (sem bcrypt)
+// Rota de login
 app.post('/api/login', async (req, res) => {
   const { email, password } = req.body;
   
@@ -107,7 +118,7 @@ app.post('/api/login', async (req, res) => {
     const connection = await pool.getConnection();
     
     const [rows] = await connection.query(
-      'SELECT uid, email, role, display_name, company_id, password_hash FROM usuarios WHERE email = ?',
+      'SELECT uid, email, role, display_name, company_id, password_hash FROM users WHERE email = ?',
       [email]
     );
     
@@ -143,7 +154,7 @@ app.get('/api/users', async (req, res) => {
   try {
     const connection = await pool.getConnection();
     const [rows] = await connection.query(
-      'SELECT uid, email, role, display_name, company_id, created_at FROM usuarios ORDER BY created_at DESC'
+      'SELECT uid, email, role, display_name, company_id, created_at FROM users ORDER BY created_at DESC'
     );
     connection.release();
     
