@@ -6,6 +6,11 @@ import admin from 'firebase-admin';
 import fs from 'fs';
 import path from 'path';
 
+const serviceAccount = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'service-account.json'), 'utf8'));
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount)
+});
 dotenv.config();
 
 // Cria o arquivo service-account.json na memória/disco temporário
