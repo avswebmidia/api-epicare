@@ -44,3 +44,39 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ API rodando na porta ${PORT}`);
   console.log(`📊 DATABASE_URL configurada: ${process.env.DATABASE_URL ? 'sim' : 'não'}`);
 });
+// Adicione estas rotas ao seu server.ts
+app.get('/api/medications', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT * FROM medications');
+    res.json(rows);
+  } catch (error) {
+    res.status(500).json({ error: 'Erro ao buscar medicações' });
+  }
+});
+
+app.get('/api/administrations', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT * FROM administrations ORDER BY administeredAt DESC');
+    res.json(rows);
+  } catch (error) {
+    res.status(500).json({ error: 'Erro ao buscar administrações' });
+  }
+});
+
+app.get('/api/seizures', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT * FROM seizures ORDER BY startTime DESC');
+    res.json(rows);
+  } catch (error) {
+    res.status(500).json({ error: 'Erro ao buscar crises' });
+  }
+});
+
+app.get('/api/monitoring_logs', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT * FROM monitoring_logs ORDER BY timestamp DESC');
+    res.json(rows);
+  } catch (error) {
+    res.status(500).json({ error: 'Erro ao buscar logs' });
+  }
+});
