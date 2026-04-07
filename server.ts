@@ -6,17 +6,19 @@ import admin from 'firebase-admin';
 import fs from 'fs';
 import path from 'path';
 
-dotenv.config();
-
-// Lê o arquivo JSON que você subiu pelo Easypanel
-const serviceAccount = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'service-account.json'), 'utf8'));
+// Inicialize o Firebase Admin
+const serviceAccount = {
+  projectId: process.env.FIREBASE_PROJECT_ID,
+  clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+  // Esta linha garante que os "\n" sejam convertidos para quebras de linha reais
+  privateKey: process.env.FIREBASE_PRIVATE_KEY ? process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n') : ''
+};
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount)
 });
 
 const db = admin.firestore();
-
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
