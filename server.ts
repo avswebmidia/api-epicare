@@ -3,6 +3,9 @@ import mysql from 'mysql2/promise';
 import cors from 'cors';
 import dotenv from 'dotenv';
 
+import admin from 'firebase-admin';
+import fs from 'fs';
+
 dotenv.config();
 
 const app = express();
@@ -11,7 +14,11 @@ app.use(express.json({ limit: '50mb' }));
 
 const pool = mysql.createPool('mysql://avsinfortec:%40avs22562@whats_sqlepicore:3306/bdepicore');
 
-
+// 2. Inicialize o Firebase Admin (logo após o dotenv.config())
+const serviceAccount = JSON.parse(fs.readFileSync('./service-account.json', 'utf8'));
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount)
+});
 
 // Rota para criar usuários admin e superadmin
 app.post('/api/create-users', async (req, res) => {
@@ -137,6 +144,50 @@ app.post('/api/create-users', async (req, res) => {
   } catch (error) {
     console.error('Erro:', error);
     res.status(500).json({ error: 'Erro ao criar usuários', details: String(error) });
+  }
+});
+
+// 3. Atualize a Rota de login
+app.post('/api/login', async (req, res) => {
+  const { email, password } = req.body;
+  
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Email e senha são obrigatórios' });
+  }
+  
+  try {
+    const connection = await pool.getConnection();
+    
+    const [rows] = await connection.query(
+      `SELECT uid, company_id, email, role, display_name, cpf, phone 
+       FROM users 
+       WHERE email = ? AND password_hash = ?`,
+      [email, password]
+    );
+    
+    connection.release();
+    
+    if (Array.isArray(rows) && rows.length === 0) {
+      return res.status(401).json({ error: 'Email ou senha incorretos' });
+    }
+    
+    const user = rows[0];
+
+    // --- ADICIONE ISSO ---
+    // Gera o token customizado para o Firebase
+    const customToken = await admin.auth().createCustomToken(user.uid);
+    // ---------------------
+    
+    res.json({
+      success: true,
+      message: 'Login realizado com sucesso',
+      user: user,
+      firebaseToken: customToken // <--- Retorne o token aqui
+    });
+    
+  } catch (error) {
+    console.error('Erro no login:', error);
+    res.status(500).json({ error: 'Erro ao fazer login' });
   }
 });
 
