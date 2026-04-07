@@ -3,64 +3,61 @@ import mysql from 'mysql2/promise';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import admin from 'firebase-admin';
-import fs from 'fs';
-import path from 'path';
 
-// Carrega variáveis de ambiente primeiro
 dotenv.config();
 
-// Função para inicializar o Firebase Admin
-function initializeFirebaseAdmin() {
-  // Verifica se já foi inicializado para evitar duplicação
+// Inicializa o Firebase Admin
+function initializeFirebase() {
+  // Verifica se já foi inicializado
   if (admin.apps.length > 0) {
-    return admin.apps[0];
+    console.log('Firebase já inicializado');
+    return;
   }
 
-  // Opção 1: Usar arquivo service-account.json se existir
-  const serviceAccountFile = path.join(process.cwd(), 'service-account.json');
-  
-  if (fs.existsSync(serviceAccountFile)) {
-    console.log('Usando arquivo service-account.json');
-    const serviceAccount = JSON.parse(fs.readFileSync(serviceAccountFile, 'utf8'));
-    return admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount)
-    });
-  }
-  
-  // Opção 2: Usar variáveis de ambiente
-  if (process.env.FIREBASE_PROJECT_ID && 
-      process.env.FIREBASE_CLIENT_EMAIL && 
-      process.env.FIREBASE_PRIVATE_KEY) {
-    console.log('Usando variáveis de ambiente');
-    const serviceAccount = {
-      projectId: process.env.FIREBASE_PROJECT_ID,
-      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-      privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n')
-    };
-    return admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount)
-    });
-  }
-  
-  // Opção 3: Usar Base64 (se disponível)
+  // Tenta inicializar com SERVICE_ACCOUNT_BASE64
   if (process.env.SERVICE_ACCOUNT_BASE64) {
-    console.log('Usando SERVICE_ACCOUNT_BASE64');
-    const serviceAccountJson = Buffer.from(process.env.SERVICE_ACCOUNT_BASE64, 'base64').toString('utf-8');
-    const serviceAccount = JSON.parse(serviceAccountJson);
-    return admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount)
-    });
+    try {
+      console.log('Inicializando Firebase com SERVICE_ACCOUNT_BASE64...');
+      const serviceAccountJson = Buffer.from(process.env.SERVICE_ACCOUNT_BASE64, 'base64').toString('utf-8');
+      const serviceAccount = JSON.parse(serviceAccountJson);
+      
+      admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount)
+      });
+      console.log('✅ Firebase inicializado com sucesso!');
+      console.log(`Projeto: ${serviceAccount.project_id}`);
+      return;
+    } catch (error) {
+      console.error('Erro ao inicializar com Base64:', error);
+    }
   }
-  
+
+  // Tenta com variáveis individuais
+  if (process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY) {
+    try {
+      console.log('Inicializando Firebase com variáveis de ambiente...');
+      admin.initializeApp({
+        credential: admin.credential.cert({
+          projectId: process.env.FIREBASE_PROJECT_ID,
+          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+          privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n')
+        })
+      });
+      console.log('✅ Firebase inicializado com sucesso!');
+      return;
+    } catch (error) {
+      console.error('Erro ao inicializar com variáveis:', error);
+    }
+  }
+
   throw new Error('Nenhuma credencial do Firebase encontrada!');
 }
 
-// Inicializa o Firebase
+// Executa a inicialização
 try {
-  initializeFirebaseAdmin();
-  console.log('Firebase Admin inicializado com sucesso!');
+  initializeFirebase();
 } catch (error) {
-  console.error('Erro ao inicializar Firebase:', error);
+  console.error('❌ Falha ao inicializar Firebase:', error);
   process.exit(1);
 }
 
@@ -94,17 +91,18 @@ app.post('/api/migrate-users-from-firebase', async (req, res) => {
           [user.id, user.displayName || user.name || 'Sem nome', user.email || '', user.role || 'caregiver', user.companyId || 'default']
         );
         migratedCount++;
+        console.log(`✅ Usuário ${user.id} migrado`);
       } catch (dbError: any) {
         if (dbError.code === 'ER_DUP_ENTRY') {
-          console.log(`Usuário ${user.id} já existe, pulando...`);
+          console.log(`⚠️ Usuário ${user.id} já existe, pulando...`);
         } else {
-          console.error(`Erro ao migrar usuário ${user.id}:`, dbError);
+          console.error(`❌ Erro ao migrar usuário ${user.id}:`, dbError.message);
         }
       }
     }
     
     connection.release();
-    console.log(`Migração concluída: ${migratedCount} de ${users.length} usuários migrados`);
+    console.log(`🎉 Migração concluída: ${migratedCount} de ${users.length} usuários migrados`);
     res.json({ 
       status: 'Migração concluída', 
       total: users.length,
@@ -117,13 +115,17 @@ app.post('/api/migrate-users-from-firebase', async (req, res) => {
   }
 });
 
-// Rota de saúde para verificar se a API está funcionando
+// Rota de saúde
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'OK', firebase: admin.apps.length > 0 ? 'conectado' : 'erro' });
+  res.json({ 
+    status: 'OK', 
+    firebase: admin.apps.length > 0 ? 'conectado' : 'erro',
+    timestamp: new Date().toISOString()
+  });
 });
 
 const PORT = 3000;
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`API rodando na porta ${PORT}`);
-  console.log(`Firebase Apps inicializados: ${admin.apps.length}`);
+  console.log(`🚀 API rodando na porta ${PORT}`);
+  console.log(`📊 Health check: http://localhost:${PORT}/api/health`);
 });
