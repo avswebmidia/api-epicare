@@ -3,8 +3,6 @@ import mysql from 'mysql2/promise';
 import cors from 'cors';
 import dotenv from 'dotenv';
 
-import admin from 'firebase-admin';
-import fs from 'fs';
 
 dotenv.config();
 
