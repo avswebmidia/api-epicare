@@ -9,6 +9,8 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
+const pool = mysql.createPool('mysql://avsinfortec:%40avs22562@whats_sqlepicore:3306/bdepicore');
+
 const pool = mysql.createPool(process.env.DATABASE_URL || '');
 
 // Rota para criar usuários admin e superadmin
