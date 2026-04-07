@@ -468,8 +468,8 @@ app.get('/api/users', async (req, res) => {
   try {
     const connection = await pool.getConnection();
     const [rows] = await connection.query(
-      'SELECT uid, company_id, email, role, display_name, cpf, phone FROM users ORDER BY created_at DESC'
-    );
+  'SELECT uid, company_id, email, role, display_name, cpf, phone FROM users ORDER BY uid DESC'
+);
     connection.release();
     
     res.json({
