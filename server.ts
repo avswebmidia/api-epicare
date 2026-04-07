@@ -2,51 +2,39 @@ import express from 'express';
 import mysql from 'mysql2/promise';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import admin from 'firebase-admin'; // Precisamos disso para ler do Firebase
 
 dotenv.config();
 
+// Inicialize o Firebase Admin aqui (certifique-se de ter o service-account.json)
+// admin.initializeApp({ ... }); 
+const db = admin.firestore();
+
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: '50mb' })); // Aumentei o limite para dados grandes
+app.use(express.json({ limit: '50mb' }));
 
 const pool = mysql.createPool(process.env.DATABASE_URL || '');
 
-app.get('/api/health', async (req, res) => {
-  try {
-    await pool.query('SELECT 1');
-    res.json({ status: 'API Online', database: 'conectado' });
-  } catch (e) {
-    res.status(500).json({ status: 'API Online', database: 'erro' });
+// Rota de Migração de Usuários
+app.post('/api/migrate-users-from-firebase', async (req, res) => {
+  const { secret } = req.body;
+  if (secret !== 'MIGRACAO_SECRETA_2026') {
+    return res.status(403).json({ error: 'Acesso negado' });
   }
-});
-
-// Rotas de Leitura
-app.get('/api/patients', async (req, res) => {
-  const [rows] = await pool.query('SELECT * FROM patients');
-  res.json(rows);
-});
-
-// Rota de Migração (Para mover dados do Firebase para o MySQL)
-app.post('/api/migrate', async (req, res) => {
-  const { table, data } = req.body;
-  
   try {
+    const snapshot = await db.collection('users').get();
+    const users = snapshot.docs.map((d: any) => ({ id: d.id, ...d.data() }));
+
     const connection = await pool.getConnection();
-    await connection.beginTransaction();
-
-    for (const item of data) {
-      if (table === 'patients') {
-        await connection.query(
-          'INSERT INTO patients (id, company_id, name, owner_uid, created_at) VALUES (?, ?, ?, ?, ?)',
-          [item.id, item.companyId || 'default', item.name, item.ownerUid, item.createdAt]
-        );
-      }
-      // Podemos adicionar outras tabelas aqui conforme necessário
+    for (const user of users) {
+      await connection.query(
+        'INSERT INTO users (id, name, email, role, company_id) VALUES (?, ?, ?, ?, ?)',
+        [user.id, user.displayName || user.name || 'Sem nome', user.email || '', user.role || 'caregiver', user.companyId || 'default']
+      );
     }
-
-    await connection.commit();
     connection.release();
-    res.json({ status: 'Migração concluída' });
+    res.json({ status: 'Migração concluída', count: users.length });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Erro na migração' });
