@@ -1,15 +1,18 @@
-# Usa uma imagem oficial do Node.js
-FROM node:18-alpine
+FROM node:20-alpine
 
-# Define o diretório de trabalho dentro do container
 WORKDIR /app
 
-# Copia o package.json e instala as dependências
+# Copiar arquivos de dependências
 COPY package*.json ./
+
+# Instalar dependências (incluindo devDependencies para build)
 RUN npm install
 
-# Copia todo o código do seu repositório para dentro do container
+# Copiar código fonte
 COPY . .
 
-# Comando para iniciar o servidor
-CMD ["npx", "tsx", "server.ts"]
+# Expor porta
+EXPOSE 3000
+
+# Iniciar aplicação com tsx (executa TypeScript diretamente)
+CMD ["npm", "start"]
