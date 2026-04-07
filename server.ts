@@ -250,7 +250,10 @@ app.get('/', (req, res) => {
       health: '/api/health',
       users: '/api/users',
       login: '/api/login',
-      createUsers: '/api/create-users'
+      createUsers: '/api/create-users',
+      patients: '/api/patients',
+      companies: '/api/companies',
+      plans: '/api/plans'
     },
     documentation: 'https://whats-epicare-api.y7nagi.easypanel.host/api/health'
   });
@@ -300,36 +303,97 @@ app.post('/api/patients', async (req, res) => {
   }
 });
 
+// ============================================
+// ENDPOINTS CORRIGIDOS COM DADOS MOCKADOS
+// ============================================
 
-// Proxy para API externa de empresas
+// Rota para empresas - Dados mockados
 app.get('/api/companies', async (req, res) => {
   try {
-    const response = await fetch('https://api-externa.com/companies', {
-      headers: {
-        'Authorization': `Bearer ${process.env.EXTERNAL_API_KEY}`
+    // Dados mockados para teste
+    const mockCompanies = [
+      { 
+        id: 1, 
+        name: 'Tech Solutions Ltda', 
+        document: '12.345.678/0001-90',
+        email: 'contato@techsolutions.com',
+        phone: '(11) 3456-7890',
+        plan_id: 1,
+        status: 'active',
+        created_at: new Date().toISOString()
+      },
+      { 
+        id: 2, 
+        name: 'Saúde Total Ltda', 
+        document: '98.765.432/0001-10',
+        email: 'contato@saudetotal.com',
+        phone: '(11) 98765-4321',
+        plan_id: 2,
+        status: 'active',
+        created_at: new Date().toISOString()
+      },
+      { 
+        id: 3, 
+        name: 'Educação Avançada', 
+        document: '45.678.912/0001-34',
+        email: 'contato@educacaoavancada.com',
+        phone: '(11) 4567-8901',
+        plan_id: 3,
+        status: 'inactive',
+        created_at: new Date().toISOString()
       }
-    });
-    const data = await response.json();
-    res.json(data);
+    ];
+    
+    res.json(mockCompanies);
   } catch (error) {
     console.error('Erro ao buscar empresas:', error);
-    res.status(500).json({ error: 'Erro ao buscar empresas' });
+    res.status(500).json([]);
   }
 });
 
-// Proxy para API externa de planos
+// Rota para planos - Dados mockados
 app.get('/api/plans', async (req, res) => {
   try {
-    const response = await fetch('https://api-externa.com/plans', {
-      headers: {
-        'Authorization': `Bearer ${process.env.EXTERNAL_API_KEY}`
+    // Dados mockados para teste
+    const mockPlans = [
+      { 
+        id: 1, 
+        name: 'Plano Básico', 
+        price: 99.90,
+        description: 'Ideal para pequenas empresas',
+        features: ['Até 10 usuários', '100 clientes', 'Suporte por email'],
+        status: 'active'
+      },
+      { 
+        id: 2, 
+        name: 'Plano Profissional', 
+        price: 199.90,
+        description: 'Para empresas em crescimento',
+        features: ['Até 50 usuários', '500 clientes', 'Suporte prioritário', 'Relatórios avançados'],
+        status: 'active'
+      },
+      { 
+        id: 3, 
+        name: 'Plano Enterprise', 
+        price: 399.90,
+        description: 'Solução completa',
+        features: ['Usuários ilimitados', 'Clientes ilimitados', 'Suporte 24/7', 'API personalizada', 'Treinamento incluso'],
+        status: 'active'
+      },
+      { 
+        id: 4, 
+        name: 'Plano Free', 
+        price: 0,
+        description: 'Para testes',
+        features: ['Até 3 usuários', '10 clientes', 'Suporte comunidade'],
+        status: 'inactive'
       }
-    });
-    const data = await response.json();
-    res.json(data);
+    ];
+    
+    res.json(mockPlans);
   } catch (error) {
     console.error('Erro ao buscar planos:', error);
-    res.status(500).json({ error: 'Erro ao buscar planos' });
+    res.status(500).json([]);
   }
 });
 
@@ -342,6 +406,10 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`  POST /api/login - Login (retorna firebaseToken)`);
   console.log(`  GET  /api/users - Listar usuários`);
   console.log(`  DELETE /api/users/:uid - Deletar usuário`);
+  console.log(`  GET  /api/patients - Listar pacientes`);
+  console.log(`  POST /api/patients - Criar paciente`);
+  console.log(`  GET  /api/companies - Listar empresas (mock)`);
+  console.log(`  GET  /api/plans - Listar planos (mock)`);
   console.log(`\n🔑 Credenciais:`);
   console.log(`  Admin: admin@epicare.com / admin123`);
   console.log(`  Super Admin: superadmin@epicare.com / superadmin123`);
