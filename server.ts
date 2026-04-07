@@ -29,6 +29,8 @@ app.post('/api/create-users', async (req, res) => {
         email: 'admin@epicare.com',
         role: 'super-admin',
         display_name: 'Administrador Principal',
+        cpf: null,
+        phone: null,
         password_hash: 'admin123'
       },
       {
@@ -37,6 +39,8 @@ app.post('/api/create-users', async (req, res) => {
         email: 'superadmin@epicare.com',
         role: 'super-admin',
         display_name: 'Super Administrador',
+        cpf: null,
+        phone: null,
         password_hash: 'superadmin123'
       },
       {
@@ -45,16 +49,19 @@ app.post('/api/create-users', async (req, res) => {
         email: 'admin@epicare.com.br',
         role: 'admin',
         display_name: 'Administrador Comum',
+        cpf: null,
+        phone: null,
         password_hash: 'admin123'
       }
     ];
     
     let created = 0;
     let errors = 0;
+    const errorDetails = [];
     
     for (const user of users) {
       try {
-        // Verificar se já existe
+        // Verificar se já existe pelo email
         const [existing] = await connection.query(
           'SELECT uid FROM users WHERE email = ?',
           [user.email]
@@ -66,27 +73,47 @@ app.post('/api/create-users', async (req, res) => {
             `UPDATE users SET 
               role = ?, 
               display_name = ?, 
-              password_hash = ?,
-              updated_at = NOW()
+              password_hash = ?
              WHERE email = ?`,
             [user.role, user.display_name, user.password_hash, user.email]
           );
           console.log(`✅ Usuário ${user.email} atualizado`);
+          created++;
         } else {
-          // Inserir novo
+          // Inserir novo usuário
           await connection.query(
             `INSERT INTO users (
-              uid, company_id, email, role, display_name, 
-              password_hash, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())`,
-            [user.uid, user.company_id, user.email, user.role, user.display_name, user.password_hash]
+              uid, 
+              company_id, 
+              email, 
+              role, 
+              display_name, 
+              cpf, 
+              phone, 
+              password_hash
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              user.uid, 
+              user.company_id, 
+              user.email, 
+              user.role, 
+              user.display_name, 
+              user.cpf, 
+              user.phone, 
+              user.password_hash
+            ]
           );
           console.log(`✅ Usuário ${user.email} criado`);
+          created++;
         }
-        created++;
-      } catch (error) {
+      } catch (error: any) {
         errors++;
-        console.error(`❌ Erro ao processar ${user.email}:`, error);
+        errorDetails.push({
+          email: user.email,
+          error: error.message,
+          code: error.code
+        });
+        console.error(`❌ Erro ao processar ${user.email}:`, error.message);
       }
     }
     
@@ -94,10 +121,15 @@ app.post('/api/create-users', async (req, res) => {
     
     res.json({
       success: true,
-      message: 'Usuários processados com sucesso',
+      message: 'Usuários processados',
       created: created,
       errors: errors,
-      users: users.map(u => ({ email: u.email, role: u.role, password: u.password_hash }))
+      errorDetails: errorDetails,
+      users: users.map(u => ({ 
+        email: u.email, 
+        role: u.role,
+        uid: u.uid
+      }))
     });
     
   } catch (error) {
@@ -118,24 +150,19 @@ app.post('/api/login', async (req, res) => {
     const connection = await pool.getConnection();
     
     const [rows] = await connection.query(
-      'SELECT uid, email, role, display_name, company_id, password_hash FROM users WHERE email = ?',
-      [email]
+      `SELECT uid, company_id, email, role, display_name, cpf, phone 
+       FROM users 
+       WHERE email = ? AND password_hash = ?`,
+      [email, password]
     );
     
     connection.release();
     
     if (Array.isArray(rows) && rows.length === 0) {
-      return res.status(401).json({ error: 'Usuário não encontrado' });
+      return res.status(401).json({ error: 'Email ou senha incorretos' });
     }
     
     const user = rows[0];
-    
-    // Comparação direta sem criptografia
-    if (password !== user.password_hash) {
-      return res.status(401).json({ error: 'Senha incorreta' });
-    }
-    
-    delete user.password_hash;
     
     res.json({
       success: true,
@@ -154,7 +181,7 @@ app.get('/api/users', async (req, res) => {
   try {
     const connection = await pool.getConnection();
     const [rows] = await connection.query(
-      'SELECT uid, email, role, display_name, company_id, created_at FROM users ORDER BY created_at DESC'
+      'SELECT uid, company_id, email, role, display_name, cpf, phone FROM users ORDER BY uid'
     );
     connection.release();
     
@@ -166,6 +193,31 @@ app.get('/api/users', async (req, res) => {
   } catch (error) {
     console.error('Erro:', error);
     res.status(500).json({ error: 'Erro ao listar usuários' });
+  }
+});
+
+// Rota para deletar um usuário (opcional)
+app.delete('/api/users/:uid', async (req, res) => {
+  const { secret } = req.body;
+  const { uid } = req.params;
+  
+  if (secret !== 'MIGRACAO_SECRETA_2026') {
+    return res.status(403).json({ error: 'Acesso negado' });
+  }
+  
+  try {
+    const connection = await pool.getConnection();
+    const [result] = await connection.query('DELETE FROM users WHERE uid = ?', [uid]);
+    connection.release();
+    
+    res.json({
+      success: true,
+      message: 'Usuário deletado com sucesso',
+      affectedRows: (result as any).affectedRows
+    });
+  } catch (error) {
+    console.error('Erro:', error);
+    res.status(500).json({ error: 'Erro ao deletar usuário' });
   }
 });
 
@@ -195,6 +247,7 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`  POST /api/create-users - Criar usuários`);
   console.log(`  POST /api/login - Login`);
   console.log(`  GET  /api/users - Listar usuários`);
+  console.log(`  DELETE /api/users/:uid - Deletar usuário`);
   console.log(`\n🔑 Credenciais:`);
   console.log(`  Admin: admin@epicare.com / admin123`);
   console.log(`  Super Admin: superadmin@epicare.com / superadmin123`);
