@@ -80,3 +80,24 @@ app.get('/api/monitoring_logs', async (req, res) => {
     res.status(500).json({ error: 'Erro ao buscar logs' });
   }
 });
+
+// Adicione esta rota no seu server.ts
+app.post('/api/migrate', async (req, res) => {
+  const { table, data } = req.body; // data é um array de objetos
+  try {
+    // Exemplo para pacientes:
+    if (table === 'patients') {
+      for (const p of data) {
+        await pool.query(
+          'INSERT INTO patients (id, company_id, name, owner_uid, created_at) VALUES (?, ?, ?, ?, ?)',
+          [p.id, p.companyId || 'default', p.name, p.ownerUid, p.createdAt]
+        );
+      }
+    }
+    // ... podemos adicionar outras tabelas aqui ...
+    res.json({ status: 'Migração concluída' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Erro na migração' });
+  }
+});
