@@ -6,16 +6,21 @@ import admin from 'firebase-admin';
 import fs from 'fs';
 import path from 'path';
 
-// Inicialize o Firebase Admin
+dotenv.config();
+
+// Cria o arquivo service-account.json na memória/disco temporário
+const serviceAccountPath = path.join(process.cwd(), 'service-account.json');
 const serviceAccount = {
   projectId: process.env.FIREBASE_PROJECT_ID,
   clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-  // Esta linha garante que os "\n" sejam convertidos para quebras de linha reais
-  privateKey: process.env.FIREBASE_PRIVATE_KEY ? process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n') : ''
+  privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n')
 };
 
+fs.writeFileSync(serviceAccountPath, JSON.stringify(serviceAccount));
+
+// Inicializa usando o arquivo criado
 admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount)
+  credential: admin.credential.cert(serviceAccountPath)
 });
 
 const db = admin.firestore();
