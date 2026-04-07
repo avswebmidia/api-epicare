@@ -2,7 +2,7 @@ import express from 'express';
 import mysql from 'mysql2/promise';
 import cors from 'cors';
 import dotenv from 'dotenv';
-
+import admin from 'firebase-admin';
 
 dotenv.config();
 
@@ -10,13 +10,24 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
-const pool = mysql.createPool('mysql://avsinfortec:%40avs22562@whats_sqlepicore:3306/bdepicore');
+// Inicializar Firebase Admin usando a variável SERVICE_ACCOUNT_BASE64
+if (!process.env.SERVICE_ACCOUNT_BASE64) {
+  console.error('❌ SERVICE_ACCOUNT_BASE64 não encontrada no .env');
+  process.exit(1);
+}
 
-// 2. Inicialize o Firebase Admin (logo após o dotenv.config())
-const serviceAccount = JSON.parse(fs.readFileSync('./service-account.json', 'utf8'));
+// Decodificar o Base64 e fazer parse do JSON
+const serviceAccount = JSON.parse(
+  Buffer.from(process.env.SERVICE_ACCOUNT_BASE64, 'base64').toString('utf8')
+);
+
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount)
 });
+
+console.log('✅ Firebase Admin inicializado com sucesso');
+
+const pool = mysql.createPool('mysql://avsinfortec:%40avs22562@whats_sqlepicore:3306/bdepicore');
 
 // Rota para criar usuários admin e superadmin
 app.post('/api/create-users', async (req, res) => {
@@ -68,14 +79,12 @@ app.post('/api/create-users', async (req, res) => {
     
     for (const user of users) {
       try {
-        // Verificar se já existe pelo email
         const [existing] = await connection.query(
           'SELECT uid FROM users WHERE email = ?',
           [user.email]
         );
         
         if (Array.isArray(existing) && existing.length > 0) {
-          // Atualizar existente
           await connection.query(
             `UPDATE users SET 
               role = ?, 
@@ -87,28 +96,11 @@ app.post('/api/create-users', async (req, res) => {
           console.log(`✅ Usuário ${user.email} atualizado`);
           created++;
         } else {
-          // Inserir novo usuário
           await connection.query(
             `INSERT INTO users (
-              uid, 
-              company_id, 
-              email, 
-              role, 
-              display_name, 
-              cpf, 
-              phone, 
-              password_hash
+              uid, company_id, email, role, display_name, cpf, phone, password_hash
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-              user.uid, 
-              user.company_id, 
-              user.email, 
-              user.role, 
-              user.display_name, 
-              user.cpf, 
-              user.phone, 
-              user.password_hash
-            ]
+            [user.uid, user.company_id, user.email, user.role, user.display_name, user.cpf, user.phone, user.password_hash]
           );
           console.log(`✅ Usuário ${user.email} criado`);
           created++;
@@ -145,7 +137,7 @@ app.post('/api/create-users', async (req, res) => {
   }
 });
 
-// 3. Atualize a Rota de login
+// Rota de login COM Firebase Token
 app.post('/api/login', async (req, res) => {
   const { email, password } = req.body;
   
@@ -170,55 +162,15 @@ app.post('/api/login', async (req, res) => {
     }
     
     const user = rows[0];
-
-    // --- ADICIONE ISSO ---
-    // Gera o token customizado para o Firebase
+    
+    // Gerar token customizado do Firebase
     const customToken = await admin.auth().createCustomToken(user.uid);
-    // ---------------------
     
     res.json({
       success: true,
       message: 'Login realizado com sucesso',
       user: user,
-      firebaseToken: customToken // <--- Retorne o token aqui
-    });
-    
-  } catch (error) {
-    console.error('Erro no login:', error);
-    res.status(500).json({ error: 'Erro ao fazer login' });
-  }
-});
-
-// Rota de login
-app.post('/api/login', async (req, res) => {
-  const { email, password } = req.body;
-  
-  if (!email || !password) {
-    return res.status(400).json({ error: 'Email e senha são obrigatórios' });
-  }
-  
-  try {
-    const connection = await pool.getConnection();
-    
-    const [rows] = await connection.query(
-      `SELECT uid, company_id, email, role, display_name, cpf, phone 
-       FROM users 
-       WHERE email = ? AND password_hash = ?`,
-      [email, password]
-    );
-    
-    connection.release();
-    
-    if (Array.isArray(rows) && rows.length === 0) {
-      return res.status(401).json({ error: 'Email ou senha incorretos' });
-    }
-    
-    const user = rows[0];
-    
-    res.json({
-      success: true,
-      message: 'Login realizado com sucesso',
-      user: user
+      firebaseToken: customToken
     });
     
   } catch (error) {
@@ -247,7 +199,7 @@ app.get('/api/users', async (req, res) => {
   }
 });
 
-// Rota para deletar um usuário (opcional)
+// Rota para deletar um usuário
 app.delete('/api/users/:uid', async (req, res) => {
   const { secret } = req.body;
   const { uid } = req.params;
@@ -290,7 +242,7 @@ app.get('/api/health', async (req, res) => {
   });
 });
 
-// Adicione antes das outras rotas
+// Rota raiz com documentação
 app.get('/', (req, res) => {
   res.json({
     message: 'API da Epicare está funcionando!',
@@ -310,7 +262,7 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`📊 Health check: http://localhost:${PORT}/api/health`);
   console.log(`\n📝 Endpoints:`);
   console.log(`  POST /api/create-users - Criar usuários`);
-  console.log(`  POST /api/login - Login`);
+  console.log(`  POST /api/login - Login (retorna firebaseToken)`);
   console.log(`  GET  /api/users - Listar usuários`);
   console.log(`  DELETE /api/users/:uid - Deletar usuário`);
   console.log(`\n🔑 Credenciais:`);
