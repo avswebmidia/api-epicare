@@ -14,7 +14,7 @@ function initializeFirebase() {
     return;
   }
 
-  // Tenta inicializar com SERVICE_ACCOUNT_BASE64
+  // PRIORIDADE 1: SERVICE_ACCOUNT_BASE64
   if (process.env.SERVICE_ACCOUNT_BASE64) {
     try {
       console.log('Inicializando Firebase com SERVICE_ACCOUNT_BASE64...');
@@ -24,33 +24,38 @@ function initializeFirebase() {
       admin.initializeApp({
         credential: admin.credential.cert(serviceAccount)
       });
-      console.log('✅ Firebase inicializado com sucesso!');
-      console.log(`Projeto: ${serviceAccount.project_id}`);
+      console.log('✅ Firebase inicializado com sucesso via Base64!');
+      console.log(`📁 Projeto: ${serviceAccount.project_id}`);
+      console.log(`📧 Email: ${serviceAccount.client_email}`);
       return;
     } catch (error) {
-      console.error('Erro ao inicializar com Base64:', error);
+      console.error('❌ Erro ao inicializar com Base64:', error);
     }
+  } else {
+    console.log('⚠️ SERVICE_ACCOUNT_BASE64 não encontrada');
   }
 
-  // Tenta com variáveis individuais
-  if (process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY) {
-    try {
-      console.log('Inicializando Firebase com variáveis de ambiente...');
+  // PRIORIDADE 2: Tentar ler arquivo service-account.json
+  try {
+    const fs = require('fs');
+    const path = require('path');
+    const filePath = path.join(process.cwd(), 'service-account.json');
+    
+    if (fs.existsSync(filePath)) {
+      console.log('Inicializando Firebase com arquivo service-account.json...');
+      const serviceAccount = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      
       admin.initializeApp({
-        credential: admin.credential.cert({
-          projectId: process.env.FIREBASE_PROJECT_ID,
-          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-          privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n')
-        })
+        credential: admin.credential.cert(serviceAccount)
       });
-      console.log('✅ Firebase inicializado com sucesso!');
+      console.log('✅ Firebase inicializado com sucesso via arquivo!');
       return;
-    } catch (error) {
-      console.error('Erro ao inicializar com variáveis:', error);
     }
+  } catch (error) {
+    console.error('Erro ao ler arquivo:', error);
   }
 
-  throw new Error('Nenhuma credencial do Firebase encontrada!');
+  throw new Error('❌ Nenhuma credencial do Firebase encontrada! Certifique-se de configurar SERVICE_ACCOUNT_BASE64');
 }
 
 // Executa a inicialização
