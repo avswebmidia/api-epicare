@@ -8,14 +8,11 @@ import path from 'path';
 
 dotenv.config();
 
-// Inicialize o Firebase Admin usando as variáveis de ambiente
+// Lê o arquivo JSON que você subiu pelo Easypanel
+const serviceAccount = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'service-account.json'), 'utf8'));
+
 admin.initializeApp({
-  credential: admin.credential.cert({
-    projectId: process.env.FIREBASE_PROJECT_ID,
-    clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-    // O segredo está aqui: substituir o literal "\n" por quebras de linha reais
-    privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n').replace(/"/g, '')
-  })
+  credential: admin.credential.cert(serviceAccount)
 });
 
 const db = admin.firestore();
