@@ -256,6 +256,50 @@ app.get('/', (req, res) => {
   });
 });
 
+// Rota para listar pacientes
+app.get('/api/patients', async (req, res) => {
+  try {
+    const connection = await pool.getConnection();
+    const [rows] = await connection.query(
+      'SELECT * FROM patients ORDER BY created_at DESC'
+    );
+    connection.release();
+    
+    res.json({
+      success: true,
+      patients: rows,
+      count: Array.isArray(rows) ? rows.length : 0
+    });
+  } catch (error) {
+    console.error('Erro:', error);
+    res.status(500).json({ error: 'Erro ao listar pacientes' });
+  }
+});
+
+// Rota para criar paciente
+app.post('/api/patients', async (req, res) => {
+  const { name, phone, email, cpf, birth_date, notes } = req.body;
+  
+  try {
+    const connection = await pool.getConnection();
+    const [result] = await connection.query(
+      `INSERT INTO patients (name, phone, email, cpf, birth_date, notes) 
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [name, phone, email, cpf, birth_date, notes]
+    );
+    connection.release();
+    
+    res.json({
+      success: true,
+      message: 'Paciente criado com sucesso',
+      patientId: (result as any).insertId
+    });
+  } catch (error) {
+    console.error('Erro:', error);
+    res.status(500).json({ error: 'Erro ao criar paciente' });
+  }
+});
+
 const PORT = 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`\n🚀 API rodando na porta ${PORT}`);
