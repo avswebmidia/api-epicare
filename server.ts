@@ -4,6 +4,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import admin from 'firebase-admin';
 import { v4 as uuidv4 } from 'uuid';
+import axios from 'axios'; // Adicionar esta dependência
 
 dotenv.config();
 
@@ -49,258 +50,270 @@ const pool = mysql.createPool({
 });
 
 // ============================================
-// FUNÇÃO PARA CRIAR/VERIFICAR TODAS AS TABELAS (CORRIGIDA)
+// CONFIGURAÇÃO DA EVOLUTION API
+// ============================================
+class EvolutionAPI {
+  constructor() {
+    this.baseURL = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
+    this.apiKey = process.env.EVOLUTION_API_KEY || 'SUA_CHAVE_AQUI';
+    this.instanceName = process.env.EVOLUTION_INSTANCE || 'medicamentos';
+  }
+
+  async sendMessage(to, message) {
+    try {
+      // Remove caracteres não numéricos e adiciona @c.us
+      let cleaned = to.toString().replace(/\D/g, '');
+      if (!cleaned.startsWith('55')) cleaned = '55' + cleaned;
+      const number = cleaned + '@c.us';
+
+      const response = await axios.post(
+        `${this.baseURL}/instance/sendText/${this.instanceName}`,
+        {
+          number: number,
+          text: message,
+          options: {
+            delay: 1200,
+            presence: "composing"
+          }
+        },
+        {
+          headers: {
+            'apikey': this.apiKey,
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+      
+      console.log(`✅ WhatsApp enviado para ${to}`);
+      return response.data;
+    } catch (error) {
+      console.error(`❌ Erro ao enviar WhatsApp: ${error.message}`);
+      return null;
+    }
+  }
+
+  async formatMedicationAlert(medication, patient) {
+    let message = `🔔 *LEMBRETE DE MEDICAÇÃO* 🔔\n\n`;
+    message += `👤 *Paciente:* ${patient.name}\n`;
+    message += `💊 *Medicamento:* ${medication.name}\n`;
+    message += `📋 *Descrição:* ${medication.description || 'Não informada'}\n`;
+    message += `💉 *Dosagem:* ${medication.dosage || 'Conforme prescrição'}\n`;
+    
+    if (medication.unit) {
+      message += `📦 *Unidade:* ${medication.unit}\n`;
+    }
+    
+    if (medication.manufacturer) {
+      message += `🏭 *Fabricante:* ${medication.manufacturer}\n`;
+    }
+    
+    message += `\n⏰ *Horário programado:* ${new Date().toLocaleTimeString('pt-BR')}\n`;
+    message += `\n✅ Para confirmar que tomou, responda: *CONFIRMAR ${medication.id}*`;
+    message += `\n⏸️ Para adiar 30min, responda: *ADIAR ${medication.id}*`;
+    message += `\n❌ Para cancelar este alerta, responda: *CANCELAR ${medication.id}*`;
+    
+    return message;
+  }
+}
+
+const evolutionAPI = new EvolutionAPI();
+
+// ============================================
+// SISTEMA DE MONITORAMENTO DE ALARMES
+// ============================================
+class MedicationAlertMonitor {
+  constructor() {
+    this.checkInterval = null;
+    this.isRunning = false;
+    this.activeAlerts = new Map(); // Para evitar alertas duplicados
+  }
+
+  start() {
+    if (this.isRunning) return;
+    
+    this.isRunning = true;
+    // Verifica a cada minuto
+    this.checkInterval = setInterval(() => this.checkScheduledMedications(), 60000);
+    console.log('🟢 Monitor de medicações iniciado (verifica a cada 1 minuto)');
+    
+    // Primeira verificação imediata
+    this.checkScheduledMedications();
+  }
+
+  stop() {
+    if (this.checkInterval) {
+      clearInterval(this.checkInterval);
+      this.isRunning = false;
+      console.log('🔴 Monitor de medicações parado');
+    }
+  }
+
+  async checkScheduledMedications() {
+    try {
+      const now = new Date();
+      const currentHour = now.getHours();
+      const currentMinute = now.getMinutes();
+      const currentTime = `${currentHour.toString().padStart(2, '0')}:${currentMinute.toString().padStart(2, '0')}`;
+      
+      // Busca administrações agendadas para este horário
+      const connection = await pool.getConnection();
+      
+      const [schedules] = await connection.query(`
+        SELECT 
+          a.*,
+          m.name as medication_name,
+          m.description as medication_description,
+          m.dosage as medication_dosage,
+          m.unit as medication_unit,
+          m.manufacturer as medication_manufacturer,
+          p.name as patient_name,
+          p.phone as patient_phone,
+          p.id as patient_id
+        FROM administrations a
+        JOIN medications m ON a.medication_id = m.id
+        JOIN patients p ON a.patient_id = p.id
+        WHERE a.status = 'pending'
+          AND TIME(a.scheduled_time) = ?
+          AND DATE(a.scheduled_time) = CURDATE()
+          AND a.alert_sent = 0
+      `, [currentTime]);
+      
+      connection.release();
+      
+      if (Array.isArray(schedules) && schedules.length > 0) {
+        console.log(`🔔 Encontrados ${schedules.length} alertas para ${currentTime}`);
+        
+        for (const schedule of schedules) {
+          await this.sendAlert(schedule);
+        }
+      }
+      
+    } catch (error) {
+      console.error('❌ Erro ao verificar medicações:', error);
+    }
+  }
+
+  async sendAlert(schedule) {
+    const alertKey = `${schedule.id}_${new Date().toISOString().slice(0, 16)}`;
+    
+    // Evita enviar o mesmo alerta múltiplas vezes
+    if (this.activeAlerts.has(alertKey)) {
+      return;
+    }
+    
+    this.activeAlerts.set(alertKey, true);
+    setTimeout(() => this.activeAlerts.delete(alertKey), 60000);
+    
+    try {
+      // Prepara os dados do medicamento e paciente
+      const medication = {
+        id: schedule.medication_id,
+        name: schedule.medication_name,
+        description: schedule.medication_description,
+        dosage: schedule.medication_dosage,
+        unit: schedule.medication_unit,
+        manufacturer: schedule.medication_manufacturer
+      };
+      
+      const patient = {
+        id: schedule.patient_id,
+        name: schedule.patient_name,
+        phone: schedule.patient_phone
+      };
+      
+      // Formata e envia a mensagem
+      const message = await evolutionAPI.formatMedicationAlert(medication, patient);
+      const sent = await evolutionAPI.sendMessage(patient.phone, message);
+      
+      // Atualiza o status no banco
+      const connection = await pool.getConnection();
+      await connection.query(
+        `UPDATE administrations 
+         SET alert_sent = 1, 
+             alert_sent_at = NOW(),
+             alert_status = ?,
+             alert_response = ?
+         WHERE id = ?`,
+        [sent ? 'sent' : 'failed', sent ? JSON.stringify(sent) : null, schedule.id]
+      );
+      connection.release();
+      
+      // Registra log de envio
+      await this.logAlert(schedule.id, patient.id, medication.id, 'sent', null);
+      
+      console.log(`✅ Alerta enviado para ${patient.name} (${patient.phone}) - ${medication.name}`);
+      
+    } catch (error) {
+      console.error(`❌ Falha ao enviar alerta para ${schedule.patient_name}:`, error);
+      await this.logAlert(schedule.id, schedule.patient_id, schedule.medication_id, 'failed', error.message);
+    }
+  }
+
+  async logAlert(administrationId, patientId, medicationId, status, error) {
+    try {
+      const connection = await pool.getConnection();
+      await connection.query(
+        `INSERT INTO alert_logs (administration_id, patient_id, medication_id, status, error_message, created_at)
+         VALUES (?, ?, ?, ?, ?, NOW())`,
+        [administrationId, patientId, medicationId, status, error]
+      );
+      connection.release();
+    } catch (error) {
+      console.error('Erro ao registrar log:', error);
+    }
+  }
+}
+
+// Inicializa o monitor
+const medicationMonitor = new MedicationAlertMonitor();
+medicationMonitor.start();
+
+// ============================================
+// FUNÇÃO PARA CRIAR/VERIFICAR TABELAS (ADICIONAR NOVA TABELA)
 // ============================================
 async function ensureTables() {
   const connection = await pool.getConnection();
   try {
     console.log('🔧 Verificando/criando tabelas...');
 
-    // 1. Tabela users
+    // ... (suas tabelas existentes) ...
+    
+    // ⭐ ADICIONAR ESTA NOVA TABELA PARA LOGS DE ALERTA
     await connection.query(`
-      CREATE TABLE IF NOT EXISTS users (
-        uid VARCHAR(255) PRIMARY KEY,
-        company_id VARCHAR(255),
-        email VARCHAR(255) UNIQUE NOT NULL,
-        role VARCHAR(50),
-        display_name VARCHAR(255),
-        cpf VARCHAR(14),
-        phone VARCHAR(20),
-        password_hash VARCHAR(255),
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        INDEX idx_email (email),
-        INDEX idx_role (role)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-    `);
-    console.log('✅ Tabela users verificada/criada');
-
-    // 2. Tabela plans
-    await connection.query(`
-      CREATE TABLE IF NOT EXISTS plans (
+      CREATE TABLE IF NOT EXISTS alert_logs (
         id INT AUTO_INCREMENT PRIMARY KEY,
-        name VARCHAR(255) NOT NULL,
-        description TEXT,
-        price DECIMAL(10, 2) NOT NULL,
-        duration_days INT DEFAULT 30,
-        features JSON,
-        max_users INT DEFAULT 0,
-        max_patients INT DEFAULT 0,
-        status VARCHAR(50) DEFAULT 'active',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-    `);
-    console.log('✅ Tabela plans verificada/criada');
-
-    // 3. Tabela companies
-    await connection.query(`
-      CREATE TABLE IF NOT EXISTS companies (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        name VARCHAR(255) NOT NULL,
-        document VARCHAR(18),
-        email VARCHAR(255),
-        phone VARCHAR(20),
-        plan_id INT,
-        status VARCHAR(50) DEFAULT 'active',
-        address TEXT,
-        city VARCHAR(100),
-        state VARCHAR(2),
-        zip_code VARCHAR(10),
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        FOREIGN KEY (plan_id) REFERENCES plans(id) ON DELETE SET NULL,
-        INDEX idx_plan (plan_id)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-    `);
-    console.log('✅ Tabela companies verificada/criada');
-
-    // 4. Tabela patients
-    await connection.query(`
-      CREATE TABLE IF NOT EXISTS patients (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        name VARCHAR(255) NOT NULL,
-        phone VARCHAR(20),
-        email VARCHAR(255),
-        cpf VARCHAR(14),
-        birth_date DATE,
-        blood_type VARCHAR(3),
-        allergies TEXT,
-        emergency_contact VARCHAR(255),
-        emergency_phone VARCHAR(20),
-        notes TEXT,
-        status VARCHAR(50) DEFAULT 'active',
-        company_id INT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE SET NULL,
-        INDEX idx_company (company_id),
-        INDEX idx_status (status),
-        INDEX idx_name (name)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-    `);
-    console.log('✅ Tabela patients verificada/criada');
-
-    // 5. Tabela medications
-    await connection.query(`
-      CREATE TABLE IF NOT EXISTS medications (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        name VARCHAR(255) NOT NULL,
-        description TEXT,
-        dosage VARCHAR(100),
-        unit VARCHAR(50),
-        manufacturer VARCHAR(255),
-        stock_quantity INT DEFAULT 0,
-        requires_prescription BOOLEAN DEFAULT FALSE,
-        patient_id INT,
-        prescribed_date DATE,
-        end_date DATE,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        FOREIGN KEY (patient_id) REFERENCES patients(id) ON DELETE SET NULL,
-        INDEX idx_patient (patient_id),
-        INDEX idx_name (name)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-    `);
-    console.log('✅ Tabela medications verificada/criada');
-
-    // 6. Tabela seizures
-    await connection.query(`
-      CREATE TABLE IF NOT EXISTS seizures (
-        id INT AUTO_INCREMENT PRIMARY KEY,
+        administration_id INT NOT NULL,
         patient_id INT NOT NULL,
-        occurred_at DATETIME NOT NULL,
-        duration_seconds INT,
-        seizure_type VARCHAR(100),
-        intensity INT CHECK (intensity BETWEEN 1 AND 10),
-        triggers TEXT,
-        symptoms TEXT,
-        medication_taken TEXT,
-        notes TEXT,
-        reported_by VARCHAR(255),
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        FOREIGN KEY (patient_id) REFERENCES patients(id) ON DELETE CASCADE,
-        INDEX idx_patient (patient_id),
-        INDEX idx_occurred (occurred_at)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-    `);
-    console.log('✅ Tabela seizures verificada/criada');
-
-    // 7. Tabela administrations
-    await connection.query(`
-      CREATE TABLE IF NOT EXISTS administrations (
-        id INT AUTO_INCREMENT PRIMARY KEY,
         medication_id INT NOT NULL,
-        patient_id INT NOT NULL,
-        scheduled_time DATETIME NOT NULL,
-        administered_time DATETIME,
         status VARCHAR(50) DEFAULT 'pending',
-        administered_by VARCHAR(255),
-        notes TEXT,
+        error_message TEXT,
+        sent_at TIMESTAMP NULL,
+        confirmed_at TIMESTAMP NULL,
+        confirmed_by VARCHAR(255),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        FOREIGN KEY (administration_id) REFERENCES administrations(id) ON DELETE CASCADE,
+        FOREIGN KEY (patient_id) REFERENCES patients(id) ON DELETE CASCADE,
         FOREIGN KEY (medication_id) REFERENCES medications(id) ON DELETE CASCADE,
-        FOREIGN KEY (patient_id) REFERENCES patients(id) ON DELETE CASCADE,
-        INDEX idx_patient (patient_id),
-        INDEX idx_scheduled (scheduled_time),
-        INDEX idx_status (status)
+        INDEX idx_status (status),
+        INDEX idx_created (created_at)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
-    console.log('✅ Tabela administrations verificada/criada');
+    console.log('✅ Tabela alert_logs verificada/criada');
 
-    // 8. Tabela monitoring_logs
-    await connection.query(`
-      CREATE TABLE IF NOT EXISTS monitoring_logs (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        patient_id INT NOT NULL,
-        heart_rate INT,
-        blood_pressure_systolic INT,
-        blood_pressure_diastolic INT,
-        oxygen_saturation INT,
-        temperature DECIMAL(4,1),
-        glucose_level INT,
-        symptoms TEXT,
-        notes TEXT,
-        device_id VARCHAR(255),
-        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (patient_id) REFERENCES patients(id) ON DELETE CASCADE,
-        INDEX idx_patient (patient_id),
-        INDEX idx_timestamp (timestamp)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-    `);
-    console.log('✅ Tabela monitoring_logs verificada/criada');
-
-    // 9. Tabela reports
-    await connection.query(`
-      CREATE TABLE IF NOT EXISTS reports (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        patient_id INT,
-        report_type VARCHAR(100),
-        start_date DATE,
-        end_date DATE,
-        data JSON,
-        generated_by VARCHAR(255),
-        notes TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (patient_id) REFERENCES patients(id) ON DELETE SET NULL,
-        INDEX idx_patient (patient_id),
-        INDEX idx_type (report_type)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-    `);
-    console.log('✅ Tabela reports verificada/criada');
-
-    // 10. Tabela appointments (CORRIGIDA - AMBOS INT)
-    await connection.query(`
-      CREATE TABLE IF NOT EXISTS appointments (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        patient_id INT NOT NULL,
-        doctor_id VARCHAR(255),
-        appointment_date DATETIME NOT NULL,
-        duration_minutes INT DEFAULT 30,
-        type VARCHAR(100) DEFAULT 'consultation',
-        status VARCHAR(50) DEFAULT 'scheduled',
-        notes TEXT,
-        location VARCHAR(255),
-        payment_status VARCHAR(50) DEFAULT 'pending',
-        value DECIMAL(10,2),
-        medical_report TEXT,
-        prescription_notes TEXT,
-        cancel_reason TEXT,
-        cancelled_at DATETIME,
-        completed_at DATETIME,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        FOREIGN KEY (patient_id) REFERENCES patients(id) ON DELETE CASCADE,
-        FOREIGN KEY (doctor_id) REFERENCES users(uid) ON DELETE SET NULL,
-        INDEX idx_patient (patient_id),
-        INDEX idx_doctor (doctor_id),
-        INDEX idx_date (appointment_date),
-        INDEX idx_status (status)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-    `);
-    console.log('✅ Tabela appointments verificada/criada');
-
-    // Inserir planos padrão
-    const [existingPlans] = await connection.query('SELECT COUNT(*) as count FROM plans');
-    if (existingPlans[0].count === 0) {
+    // ⭐ ADICIONAR CAMPOS NA TABELA administrations (se não existirem)
+    try {
       await connection.query(`
-        INSERT INTO plans (name, description, price, duration_days, features, max_users, max_patients, status) VALUES
-        ('Plano Básico', 'Ideal para pequenas empresas', 99.90, 30, '["Até 10 usuários", "100 pacientes", "Suporte email"]', 10, 100, 'active'),
-        ('Plano Profissional', 'Para empresas em crescimento', 199.90, 30, '["Até 50 usuários", "500 pacientes", "Suporte prioritário", "Relatórios avançados"]', 50, 500, 'active'),
-        ('Plano Enterprise', 'Solução completa', 399.90, 30, '["Usuários ilimitados", "Pacientes ilimitados", "Suporte 24/7", "API personalizada"]', 999999, 999999, 'active')
+        ALTER TABLE administrations 
+        ADD COLUMN IF NOT EXISTS alert_sent BOOLEAN DEFAULT FALSE,
+        ADD COLUMN IF NOT EXISTS alert_sent_at TIMESTAMP NULL,
+        ADD COLUMN IF NOT EXISTS alert_status VARCHAR(50) DEFAULT 'pending',
+        ADD COLUMN IF NOT EXISTS alert_response JSON,
+        ADD COLUMN IF NOT EXISTS confirmed_at TIMESTAMP NULL,
+        ADD COLUMN IF NOT EXISTS confirmed_by VARCHAR(255)
       `);
-      console.log('✅ Planos padrão inseridos');
-    }
-
-    // Inserir empresa padrão
-    const [existingCompanies] = await connection.query('SELECT COUNT(*) as count FROM companies');
-    if (existingCompanies[0].count === 0) {
-      await connection.query(`
-        INSERT INTO companies (name, document, email, phone, plan_id, status) VALUES
-        ('Epicare Sistemas', '00.000.000/0001-00', 'contato@epicare.com', '(11) 99999-9999', 1, 'active')
-      `);
-      console.log('✅ Empresa padrão inserida');
+      console.log('✅ Campos de alerta adicionados à tabela administrations');
+    } catch (alterError) {
+      console.log('⚠️ Campos já existem ou erro ao adicionar:', alterError.message);
     }
 
     console.log('🎉 Todas as tabelas foram verificadas/criadas com sucesso!');
@@ -313,417 +326,202 @@ async function ensureTables() {
 }
 
 // ============================================
-// ROTA PARA CRIAR USUÁRIOS COM UID TOKEN
+// ⭐ NOVOS ENDPOINTS PARA ALERTAS DE MEDICAÇÃO
 // ============================================
-app.post('/api/create-users', async (req, res) => {
-  const { secret } = req.body;
-  
-  if (secret !== 'MIGRACAO_SECRETA_2026') {
-    return res.status(403).json({ error: 'Acesso negado' });
-  }
-  
-  try {
-    const connection = await pool.getConnection();
-    
-    const users = [
-      {
-        uid: uuidv4(),
-        company_id: '1',
-        email: 'admin@epicare.com',
-        role: 'super-admin',
-        display_name: 'Administrador Principal',
-        cpf: null,
-        phone: null,
-        password_hash: 'admin123'
-      },
-      {
-        uid: uuidv4(),
-        company_id: '1',
-        email: 'superadmin@epicare.com',
-        role: 'super-admin',
-        display_name: 'Super Administrador',
-        cpf: null,
-        phone: null,
-        password_hash: 'superadmin123'
-      },
-      {
-        uid: uuidv4(),
-        company_id: '1',
-        email: 'avsinfortec@gmail.com',
-        role: 'super-admin',
-        display_name: 'AVS Informática',
-        cpf: null,
-        phone: null,
-        password_hash: '@avs22562'
-      }
-    ];
-    
-    let created = 0;
-    const errorDetails: any[] = [];
-    
-    for (const user of users) {
-      try {
-        const [existing] = await connection.query(
-          'SELECT uid FROM users WHERE email = ?',
-          [user.email]
-        );
-        
-        if (Array.isArray(existing) && existing.length > 0) {
-          await connection.query(
-            `UPDATE users SET role = ?, display_name = ?, password_hash = ?, uid = ? WHERE email = ?`,
-            [user.role, user.display_name, user.password_hash, user.uid, user.email]
-          );
-          console.log(`✅ Usuário ${user.email} atualizado com UID: ${user.uid}`);
-          created++;
-        } else {
-          await connection.query(
-            `INSERT INTO users (uid, company_id, email, role, display_name, cpf, phone, password_hash)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-            [user.uid, user.company_id, user.email, user.role, user.display_name, user.cpf, user.phone, user.password_hash]
-          );
-          console.log(`✅ Usuário ${user.email} criado com UID: ${user.uid}`);
-          created++;
-        }
-        
-        try {
-          await admin.auth().getUserByEmail(user.email);
-          console.log(`✅ Usuário ${user.email} já existe no Firebase`);
-        } catch (firebaseError) {
-          await admin.auth().createUser({
-            uid: user.uid,
-            email: user.email,
-            password: user.password_hash,
-            displayName: user.display_name
-          });
-          console.log(`✅ Usuário ${user.email} criado no Firebase`);
-        }
-        
-      } catch (error: any) {
-        errorDetails.push({ email: user.email, error: error.message });
-        console.error(`❌ Erro ao processar ${user.email}:`, error.message);
-      }
-    }
-    
-    connection.release();
-    
-    res.json({
-      success: true,
-      message: 'Usuários processados com UIDs Firebase',
-      created,
-      errors: errorDetails.length,
-      errorDetails,
-      users: users.map(u => ({ email: u.email, role: u.role, uid: u.uid }))
-    });
-    
-  } catch (error) {
-    console.error('Erro:', error);
-    res.status(500).json({ error: 'Erro ao criar usuários', details: String(error) });
-  }
-});
 
-// ============================================
-// ROTA DE LOGIN
-// ============================================
-app.post('/api/login', async (req, res) => {
-  const { email, password } = req.body;
-  
-  if (!email || !password) {
-    return res.status(400).json({ error: 'Email e senha são obrigatórios' });
+// Endpoint para agendar uma administração com alerta
+app.post('/api/schedule-medication', async (req, res) => {
+  const { 
+    medication_id, 
+    patient_id, 
+    scheduled_time, 
+    notes 
+  } = req.body;
+
+  if (!medication_id || !patient_id || !scheduled_time) {
+    return res.status(400).json({ 
+      error: 'medication_id, patient_id e scheduled_time são obrigatórios' 
+    });
   }
-  
+
   try {
     const connection = await pool.getConnection();
     
-    const [rows] = await connection.query(
-      `SELECT uid, company_id, email, role, display_name, cpf, phone 
-       FROM users WHERE email = ? AND password_hash = ?`,
-      [email, password]
+    // Verifica se paciente tem telefone
+    const [patient] = await connection.query(
+      'SELECT phone, name FROM patients WHERE id = ?',
+      [patient_id]
     );
     
-    connection.release();
-    
-    if (Array.isArray(rows) && rows.length === 0) {
-      return res.status(401).json({ error: 'Email ou senha incorretos' });
-    }
-    
-    const user = rows[0];
-    const customToken = await admin.auth().createCustomToken(user.uid);
-    
-    res.json({
-      success: true,
-      message: 'Login realizado com sucesso',
-      user,
-      firebaseToken: customToken
-    });
-    
-  } catch (error) {
-    console.error('Erro no login:', error);
-    res.status(500).json({ error: 'Erro ao fazer login' });
-  }
-});
-
-// ============================================
-// ENDPOINTS - PATIENTS
-// ============================================
-app.get('/api/patients', async (req, res) => {
-  try {
-    const connection = await pool.getConnection();
-    const [rows] = await connection.query(`
-      SELECT p.*, 
-             COUNT(DISTINCT s.id) as seizures_count,
-             COUNT(DISTINCT m.id) as medications_count
-      FROM patients p
-      LEFT JOIN seizures s ON p.id = s.patient_id
-      LEFT JOIN medications m ON p.id = m.patient_id
-      GROUP BY p.id
-      ORDER BY p.name ASC
-    `);
-    connection.release();
-    
-    res.json(Array.isArray(rows) ? rows : []);
-  } catch (error) {
-    console.error('Erro ao listar pacientes:', error);
-    res.status(500).json({ error: 'Erro ao listar pacientes' });
-  }
-});
-
-app.get('/api/patients/:id', async (req, res) => {
-  const { id } = req.params;
-  
-  try {
-    const connection = await pool.getConnection();
-    const [patientRows] = await connection.query('SELECT * FROM patients WHERE id = ?', [id]);
-    
-    if (Array.isArray(patientRows) && patientRows.length === 0) {
+    if (!patient[0]?.phone) {
       connection.release();
-      return res.status(404).json({ error: 'Paciente não encontrado' });
+      return res.status(400).json({ 
+        error: 'Paciente não possui telefone cadastrado para receber alertas' 
+      });
     }
-    
-    const [seizures] = await connection.query(
-      'SELECT * FROM seizures WHERE patient_id = ? ORDER BY occurred_at DESC', 
-      [id]
-    );
-    const [medications] = await connection.query(
-      'SELECT * FROM medications WHERE patient_id = ? ORDER BY prescribed_date DESC', 
-      [id]
-    );
-    
-    connection.release();
-    
-    res.json({
-      patient: patientRows[0],
-      seizures: seizures || [],
-      medications: medications || []
-    });
-  } catch (error) {
-    console.error('Erro ao buscar paciente:', error);
-    res.status(500).json({ error: 'Erro ao buscar paciente' });
-  }
-});
 
-app.post('/api/patients', async (req, res) => {
-  const { name, phone, email, cpf, birth_date, blood_type, allergies, emergency_contact, emergency_phone, notes, company_id } = req.body;
-  
-  if (!name) {
-    return res.status(400).json({ error: 'Nome é obrigatório' });
-  }
-  
-  try {
-    const connection = await pool.getConnection();
     const [result] = await connection.query(
-      `INSERT INTO patients (name, phone, email, cpf, birth_date, blood_type, allergies, emergency_contact, emergency_phone, notes, company_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [name, phone, email, cpf, birth_date, blood_type, allergies, emergency_contact, emergency_phone, notes, company_id]
+      `INSERT INTO administrations 
+       (medication_id, patient_id, scheduled_time, status, notes)
+       VALUES (?, ?, ?, 'pending', ?)`,
+      [medication_id, patient_id, scheduled_time, notes]
     );
+
     connection.release();
-    
+
     res.status(201).json({
       success: true,
-      message: 'Paciente criado com sucesso',
-      patientId: (result as any).insertId
+      message: 'Medicação agendada com sucesso',
+      administrationId: (result as any).insertId,
+      alerta: `WhatsApp será enviado para ${patient[0].phone} no horário agendado`
     });
+
   } catch (error) {
-    console.error('Erro ao criar paciente:', error);
-    res.status(500).json({ error: 'Erro ao criar paciente' });
+    console.error('Erro ao agendar medicação:', error);
+    res.status(500).json({ error: 'Erro ao agendar medicação' });
   }
 });
 
-app.put('/api/patients/:id', async (req, res) => {
-  const { id } = req.params;
-  const { name, phone, email, cpf, birth_date, blood_type, allergies, emergency_contact, emergency_phone, notes, status } = req.body;
-  
-  try {
-    const connection = await pool.getConnection();
-    const [result] = await connection.query(
-      `UPDATE patients SET name=?, phone=?, email=?, cpf=?, birth_date=?, blood_type=?, allergies=?, emergency_contact=?, emergency_phone=?, notes=?, status=?
-       WHERE id = ?`,
-      [name, phone, email, cpf, birth_date, blood_type, allergies, emergency_contact, emergency_phone, notes, status, id]
-    );
-    connection.release();
-    
-    if ((result as any).affectedRows === 0) {
-      return res.status(404).json({ error: 'Paciente não encontrado' });
-    }
-    
-    res.json({ success: true, message: 'Paciente atualizado com sucesso' });
-  } catch (error) {
-    console.error('Erro ao atualizar paciente:', error);
-    res.status(500).json({ error: 'Erro ao atualizar paciente' });
-  }
-});
-
-app.delete('/api/patients/:id', async (req, res) => {
-  const { id } = req.params;
-  
-  try {
-    const connection = await pool.getConnection();
-    const [result] = await connection.query('DELETE FROM patients WHERE id = ?', [id]);
-    connection.release();
-    
-    if ((result as any).affectedRows === 0) {
-      return res.status(404).json({ error: 'Paciente não encontrado' });
-    }
-    
-    res.json({ success: true, message: 'Paciente deletado com sucesso' });
-  } catch (error) {
-    console.error('Erro ao deletar paciente:', error);
-    res.status(500).json({ error: 'Erro ao deletar paciente' });
-  }
-});
-
-// ============================================
-// ENDPOINTS - MEDICATIONS
-// ============================================
-app.get('/api/medications', async (req, res) => {
+// Endpoint para listar administrações pendentes
+app.get('/api/pending-administrations', async (req, res) => {
   try {
     const connection = await pool.getConnection();
     const [rows] = await connection.query(`
-      SELECT m.*, p.name as patient_name 
-      FROM medications m
-      LEFT JOIN patients p ON m.patient_id = p.id
-      ORDER BY m.name ASC
+      SELECT 
+        a.*,
+        m.name as medication_name,
+        p.name as patient_name,
+        p.phone as patient_phone
+      FROM administrations a
+      JOIN medications m ON a.medication_id = m.id
+      JOIN patients p ON a.patient_id = p.id
+      WHERE a.status = 'pending'
+        AND a.scheduled_time >= NOW()
+      ORDER BY a.scheduled_time ASC
     `);
     connection.release();
-    res.json(Array.isArray(rows) ? rows : []);
-  } catch (error) {
-    console.error('Erro ao listar medicamentos:', error);
-    res.status(500).json({ error: 'Erro ao listar medicamentos' });
-  }
-});
-
-app.post('/api/medications', async (req, res) => {
-  const { name, description, dosage, unit, manufacturer, patient_id, prescribed_date } = req.body;
-  
-  if (!name) {
-    return res.status(400).json({ error: 'Nome é obrigatório' });
-  }
-  
-  try {
-    const connection = await pool.getConnection();
-    const [result] = await connection.query(
-      `INSERT INTO medications (name, description, dosage, unit, manufacturer, patient_id, prescribed_date)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [name, description, dosage, unit, manufacturer, patient_id, prescribed_date]
-    );
-    connection.release();
     
-    res.status(201).json({
-      success: true,
-      message: 'Medicamento criado com sucesso',
-      medicationId: (result as any).insertId
-    });
+    res.json(rows || []);
   } catch (error) {
-    console.error('Erro ao criar medicamento:', error);
-    res.status(500).json({ error: 'Erro ao criar medicamento' });
+    console.error('Erro ao listar administrações:', error);
+    res.status(500).json({ error: 'Erro ao listar administrações' });
   }
 });
 
-// ============================================
-// ENDPOINTS - SEIZURES
-// ============================================
-app.get('/api/seizures', async (req, res) => {
+// Webhook para receber respostas do WhatsApp (Evolution API)
+app.post('/api/whatsapp-webhook', async (req, res) => {
+  const { message, from } = req.body;
+  
+  if (!message || !message.text) {
+    return res.sendStatus(200);
+  }
+
+  const text = message.text.body;
+  const phone = from.replace('@c.us', '');
+  
+  console.log(`📱 Mensagem recebida de ${phone}: ${text}`);
+
+  // Processa comandos
+  const confirmMatch = text.match(/CONFIRMAR (\d+)/i);
+  const adiarMatch = text.match(/ADIAR (\d+)/i);
+  const cancelarMatch = text.match(/CANCELAR (\d+)/i);
+
   try {
     const connection = await pool.getConnection();
-    const [rows] = await connection.query(`
-      SELECT s.*, p.name as patient_name 
-      FROM seizures s
-      LEFT JOIN patients p ON s.patient_id = p.id
-      ORDER BY s.occurred_at DESC
-    `);
-    connection.release();
-    res.json(Array.isArray(rows) ? rows : []);
-  } catch (error) {
-    console.error('Erro ao listar convulsões:', error);
-    res.status(500).json({ error: 'Erro ao listar convulsões' });
-  }
-});
 
-app.post('/api/seizures', async (req, res) => {
-  const { patient_id, occurred_at, duration_seconds, seizure_type, intensity, triggers, symptoms, notes } = req.body;
-  
-  if (!patient_id || !occurred_at) {
-    return res.status(400).json({ error: 'Paciente e data são obrigatórios' });
-  }
-  
-  try {
-    const connection = await pool.getConnection();
-    const [result] = await connection.query(
-      `INSERT INTO seizures (patient_id, occurred_at, duration_seconds, seizure_type, intensity, triggers, symptoms, notes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [patient_id, occurred_at, duration_seconds, seizure_type, intensity, triggers, symptoms, notes]
-    );
-    connection.release();
-    
-    res.status(201).json({
-      success: true,
-      message: 'Convulsão registrada com sucesso',
-      seizureId: (result as any).insertId
-    });
-  } catch (error) {
-    console.error('Erro ao registrar convulsão:', error);
-    res.status(500).json({ error: 'Erro ao registrar convulsão' });
-  }
-});
-
-// ============================================
-// ROTA DE SAÚDE
-// ============================================
-app.get('/api/health', async (req, res) => {
-  let mysqlStatus = 'disconnected';
-  try {
-    const connection = await pool.getConnection();
-    await connection.query('SELECT 1');
-    mysqlStatus = 'connected';
-    connection.release();
-  } catch (error) {
-    mysqlStatus = 'error';
-  }
-  
-  res.json({ 
-    status: 'OK',
-    mysql: mysqlStatus,
-    timestamp: new Date().toISOString()
-  });
-});
-
-// ============================================
-// ROTA RAIZ
-// ============================================
-app.get('/', (req, res) => {
-  res.json({
-    message: 'API da Epicare está funcionando!',
-    version: '2.0.0',
-    endpoints: {
-      auth: { login: 'POST /api/login', createUsers: 'POST /api/create-users' },
-      patients: { list: 'GET /api/patients', create: 'POST /api/patients', get: 'GET /api/patients/:id', update: 'PUT /api/patients/:id', delete: 'DELETE /api/patients/:id' },
-      medications: { list: 'GET /api/medications', create: 'POST /api/medications' },
-      seizures: { list: 'GET /api/seizures', create: 'POST /api/seizures' }
+    if (confirmMatch) {
+      const administrationId = confirmMatch[1];
+      
+      await connection.query(
+        `UPDATE administrations 
+         SET status = 'completed', 
+             administered_time = NOW(),
+             confirmed_at = NOW(),
+             confirmed_by = ?
+         WHERE id = ?`,
+        [phone, administrationId]
+      );
+      
+      await evolutionAPI.sendMessage(phone, 
+        '✅ *Medicação confirmada!*\n\nObrigado por confirmar. Continue cuidando da sua saúde! 💪'
+      );
+      
+    } else if (adiarMatch) {
+      const administrationId = adiarMatch[1];
+      
+      await connection.query(
+        `UPDATE administrations 
+         SET scheduled_time = DATE_ADD(scheduled_time, INTERVAL 30 MINUTE),
+             alert_sent = 0
+         WHERE id = ?`,
+        [administrationId]
+      );
+      
+      await evolutionAPI.sendMessage(phone,
+        '⏰ *Medicação adiada por 30 minutos*\n\nVocê receberá um novo lembrete no novo horário.'
+      );
+      
+    } else if (cancelarMatch) {
+      const administrationId = cancelarMatch[1];
+      
+      await connection.query(
+        `UPDATE administrations 
+         SET status = 'cancelled',
+             notes = CONCAT(IFNULL(notes, ''), ' [Cancelado por WhatsApp em ', NOW(), ']')
+         WHERE id = ?`,
+        [administrationId]
+      );
+      
+      await evolutionAPI.sendMessage(phone,
+        '❌ *Alerta cancelado*\n\nEste lembrete foi cancelado. Para novos agendamentos, entre em contato com a clínica.'
+      );
     }
-  });
+    
+    connection.release();
+    
+  } catch (error) {
+    console.error('Erro ao processar webhook:', error);
+  }
+  
+  res.sendStatus(200);
 });
 
+// Endpoint para testar envio de WhatsApp
+app.post('/api/test-whatsapp', async (req, res) => {
+  const { phone, message } = req.body;
+  
+  if (!phone || !message) {
+    return res.status(400).json({ error: 'phone e message são obrigatórios' });
+  }
+  
+  const result = await evolutionAPI.sendMessage(phone, message);
+  
+  if (result) {
+    res.json({ success: true, message: 'Mensagem enviada com sucesso' });
+  } else {
+    res.status(500).json({ error: 'Falha ao enviar mensagem' });
+  }
+});
+
+// Endpoint para verificar status da Evolution API
+app.get('/api/evolution-status', async (req, res) => {
+  try {
+    const response = await axios.get(
+      `${process.env.EVOLUTION_API_URL}/instance/connectionState/${process.env.EVOLUTION_INSTANCE}`,
+      {
+        headers: { 'apikey': process.env.EVOLUTION_API_KEY }
+      }
+    );
+    res.json({ connected: true, status: response.data });
+  } catch (error) {
+    res.json({ connected: false, error: error.message });
+  }
+});
+
+// ... (restante do seu código existente: login, patients, medications, seizures, etc.)
+
 // ============================================
-// INICIALIZAÇÃO DO SERVIDOR
+// INICIALIZAÇÃO DO SERVIDOR (MODIFICADA)
 // ============================================
 const PORT = parseInt(process.env.PORT || '3000');
 
@@ -738,9 +536,11 @@ async function startServer() {
     app.listen(PORT, '0.0.0.0', () => {
       console.log(`\n🚀 API rodando na porta ${PORT}`);
       console.log(`📊 Health check: http://localhost:${PORT}/api/health`);
+      console.log(`📱 Evolution API Status: http://localhost:${PORT}/api/evolution-status`);
       console.log(`\n🔑 Credenciais de teste:`);
       console.log(`  Admin: admin@epicare.com / admin123`);
       console.log(`  AVS: avsinfortec@gmail.com / @avs22562`);
+      console.log(`\n🟢 Monitor de medicamentos ATIVO - Verificando a cada minuto`);
     });
   } catch (error) {
     console.error('❌ Erro ao iniciar servidor:', error);
@@ -749,3 +549,10 @@ async function startServer() {
 }
 
 startServer();
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('Recebido SIGTERM, encerrando...');
+  medicationMonitor.stop();
+  process.exit(0);
+});
